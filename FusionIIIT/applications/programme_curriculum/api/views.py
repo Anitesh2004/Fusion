@@ -10,14 +10,16 @@ from django.contrib.auth.models import User
 from ..models import Programme, Discipline, Curriculum, Semester, Course, Batch, CourseSlot,NewProposalFile,Proposal_Tracking
 from ..forms import ProgrammeForm, DisciplineForm, CurriculumForm, SemesterForm, CourseForm, BatchForm, CourseSlotForm, ReplicateCurriculumForm,NewCourseProposalFile,CourseProposalTrackingFile
 from ..filters import CourseFilter, BatchFilter, CurriculumFilter
-from .serializers import CourseSerializer,CurriculumSerializer
+from .serializers import CourseSerializer,CurriculumSerializer,BatchSerializer
 from django.db import IntegrityError
 from django.utils import timezone
 from django.forms.models import model_to_dict
 import json
 
 from rest_framework.response import Response
-from rest_framework.decorators import api_view
+# from rest_framework.decorators import api_view
+from rest_framework.decorators import api_view, permission_classes #type:ignore
+from rest_framework.permissions import IsAuthenticated #type:ignore
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework import status
@@ -547,6 +549,9 @@ def admin_view_semesters_of_a_curriculum(request, curriculum_id):
             'slots': slots,
             'credits': credits_sum
         })
+        # for i in semester_data:
+        #     print(i.id,"\n")
+        # print(semester_data.id)
     all_batches = Batch.objects.filter(running_batch=True, curriculum=curriculum_id).order_by('year')
     batch_data = [
         {
@@ -561,6 +566,7 @@ def admin_view_semesters_of_a_curriculum(request, curriculum_id):
         'curriculum_id': curriculum.id,
         'curriculum_name': curriculum.name,
         'version': curriculum.version,
+        'programme_id': curriculum.programme.id,
         'batches':batch_data,
         'semesters': semester_data
     }
@@ -825,6 +831,7 @@ def admin_view_all_batches(request):
     # Serialize the batch data
     batch_data = [
         {
+            'batch_id':batch.id,
             'name': batch.name,
             'discipline': str(batch.discipline.acronym),
             'year': batch.year,
@@ -835,9 +842,10 @@ def admin_view_all_batches(request):
         }
         for batch in running_batches
     ]
-
+    print(batch_data)
     finished_batch_data = [
         {
+            'batch_id':batch.id,
             'name': batch.name,
             'discipline': str(batch.discipline.acronym),
             'year': batch.year,
@@ -991,101 +999,174 @@ def edit_programme_form(request, programme_id):
                 return HttpResponseRedirect('/programme_curriculum/admin_curriculums/' + str(programme.id) + '/')  
     return render(request, 'programme_curriculum/acad_admin/add_programme_form.html',{'form':form, 'submitbutton': submitbutton})
 
-
+@permission_classes([IsAuthenticated])
+@api_view(['POST'])
 def add_curriculum_form(request):
     """
-    This function is used to add Curriculum and Semester into Curriculum and Semester table.
-        
-    @variables:
-        no_of_semester - Get number of Semesters from form.
-        NewSemester - For initializing a new semester.
+    Handle adding Curriculum and Semesters through an API endpoint.
     """
-    user_details = ExtraInfo.objects.get(user = request.user)
-    des = HoldsDesignation.objects.all().filter(user = request.user).first()
-    if request.session['currentDesignationSelected']== "student" or request.session['currentDesignationSelected']== "Associate Professor" or request.session['currentDesignationSelected']== "Professor" or request.session['currentDesignationSelected']== "Assistant Professor" :
-        return HttpResponseRedirect('/programme_curriculum/programmes/')
-    elif str(request.user) == "acadadmin" :
-        pass
-    elif 'hod' in request.session['currentDesignationSelected'].lower():
-        return HttpResponseRedirect('/programme_curriculum/programmes/')
+
+
+    if request.method == 'POST':
+        try:
+            # Parse the incoming JSON data
+            data = json.loads(request.body)
+            curriculum_name = data.get('curriculum_name')
+            programme_id = data.get('programme')
+            working_curriculum = data.get('working_curriculum', False)
+            version_no = data.get('version_no', 1.0)
+            num_semesters = data.get('no_of_semester', 1)
+            num_credits = data.get('num_credits', 0)
+
+            # Validate that the programme exists
+            try:
+                programme = Programme.objects.get(id=programme_id)
+            except Programme.DoesNotExist:
+                return JsonResponse({'error': 'Invalid programme ID'}, status=400)
+
+            # Mark the previous versions as non-latest for this curriculum name
+            Curriculum.objects.filter(name=curriculum_name, programme=programme).update(latest_version=False)
+
+            # Create the new Curriculum instance
+            curriculum = Curriculum(
+                name=curriculum_name,
+                programme=programme,
+                working_curriculum=working_curriculum,
+                version=version_no,
+                no_of_semester=num_semesters,
+                min_credit=num_credits,
+                latest_version=True
+            )
+            curriculum.save()
+
+            # Add Semesters for the Curriculum
+            semesters = [
+                Semester(curriculum=curriculum, semester_no=semester_no)
+                for semester_no in range(1, num_semesters + 1)
+            ]
+            Semester.objects.bulk_create(semesters)
+
+            return JsonResponse({'message': 'Curriculum added successfully!'}, status=201)
+        except Exception as e:
+            return JsonResponse({'error': str(e)}, status=400)
+    return JsonResponse({'error': 'Invalid request method.'}, status=405)
+
+
+
+# @login_required(login_url='/accounts/login')
+# def edit_curriculum_form(request, curriculum_id):
+#     """
+#     This function is used to edit Curriculum and Semester into Curriculum and Semester table.
+        
+#     @variables:
+#         no_of_semester - Get number of Semesters from form.
+#         OldSemester - For Removing dropped Semester.
+#         NewSemester - For initializing a new semester.
+#     """
+#     user_details = ExtraInfo.objects.get(user = request.user)
+#     des = HoldsDesignation.objects.all().filter(user = request.user).first()
+#     if request.session['currentDesignationSelected']== "student" or request.session['currentDesignationSelected']== "Associate Professor" or request.session['currentDesignationSelected']== "Professor" or request.session['currentDesignationSelected']== "Assistant Professor" :
+#         return HttpResponseRedirect('/programme_curriculum/programmes/')
+#     elif str(request.user) == "acadadmin" :
+#         pass
+#     elif 'hod' in request.session['currentDesignationSelected'].lower():
+#         return HttpResponseRedirect('/programme_curriculum/programmes/')
     
+#     curriculum = get_object_or_404(Curriculum, Q(id=curriculum_id))
 
-    programme_id = request.GET.get('programme_id', -1)
-    form = CurriculumForm(initial={'programme': programme_id})
-    submitbutton= request.POST.get('Submit')
-    if submitbutton:
-        if request.method == 'POST':
-            form = CurriculumForm(request.POST)  
-            if form.is_valid():
+#     form = CurriculumForm(instance=curriculum)
+#     submitbutton= request.POST.get('Submit')
+#     if submitbutton:
+#         if request.method == 'POST':
+#             form = CurriculumForm(request.POST, instance=curriculum)
+#             if form.is_valid():
+#                 form.save()
+#                 no_of_semester = int(form.cleaned_data['no_of_semester'])
+#                 old_no_of_semester = Semester.objects.filter(curriculum=curriculum).count()
+#                 if(old_no_of_semester != no_of_semester):
+                    
+#                     if(old_no_of_semester > no_of_semester):
+#                         for semester_no in range(no_of_semester+1, old_no_of_semester+1):
+#                             try:
+#                                 OldSemester = Semester.objects.filter(curriculum=curriculum).filter(semester_no=semester_no)
+#                                 OldSemester.delete()
+#                             except:
+#                                 print("Failed to remove old semester")
+                                
+                                
+#                     elif(old_no_of_semester < no_of_semester):
+#                         for semester_no in range(max(1, old_no_of_semester), no_of_semester+1):
+#                             try:
+#                                 NewSemester = Semester(curriculum=curriculum,semester_no=semester_no)
+#                                 NewSemester.save()
+#                             except:
+#                                 print("Failed to add new semester")            
 
-                curriculum = form.save(commit=False)
-                curriculum.save()
-                no_of_semester = curriculum.no_of_semester
+#                 messages.success(request, "Updated "+ curriculum.name +" successful")
+#                 return HttpResponseRedirect('/programme_curriculum/admin_curriculum_semesters/' + str(curriculum.id) + '/')
 
-                for semester_no in range(1, no_of_semester+1):
-                    NewSemester = Semester(curriculum=curriculum,semester_no=semester_no)
-                    NewSemester.save()
+#     return render(request, 'programme_curriculum/acad_admin/add_curriculum_form.html',{'form':form,  'submitbutton': submitbutton})
 
-                messages.success(request, "Added successful")
-                return HttpResponseRedirect('/programme_curriculum/admin_curriculum_semesters/' + str(curriculum.id) + '/')
-                
-    return render(request, 'programme_curriculum/acad_admin/add_curriculum_form.html',{'form':form, 'submitbutton': submitbutton})
-
-
-
-@login_required(login_url='/accounts/login')
+@permission_classes([IsAuthenticated])
+@api_view(['PUT'])
 def edit_curriculum_form(request, curriculum_id):
     """
-    This function is used to edit Curriculum and Semester into Curriculum and Semester table.
-        
-    @variables:
-        no_of_semester - Get number of Semesters from form.
-        OldSemester - For Removing dropped Semester.
-        NewSemester - For initializing a new semester.
+    Handle updating Curriculum and Semesters through an API endpoint.
     """
-    user_details = ExtraInfo.objects.get(user = request.user)
-    des = HoldsDesignation.objects.all().filter(user = request.user).first()
-    if request.session['currentDesignationSelected']== "student" or request.session['currentDesignationSelected']== "Associate Professor" or request.session['currentDesignationSelected']== "Professor" or request.session['currentDesignationSelected']== "Assistant Professor" :
-        return HttpResponseRedirect('/programme_curriculum/programmes/')
-    elif str(request.user) == "acadadmin" :
-        pass
-    elif 'hod' in request.session['currentDesignationSelected'].lower():
-        return HttpResponseRedirect('/programme_curriculum/programmes/')
-    
-    curriculum = get_object_or_404(Curriculum, Q(id=curriculum_id))
+    if request.method == 'PUT':
+        try:
+            # Parse the incoming JSON data
+            data = json.loads(request.body)
+            curriculum_name = data.get('curriculum_name')
+            programme_id = data.get('programme')
+            working_curriculum = data.get('working_curriculum', False)
+            version_no = data.get('version_no', 1.0)
+            num_semesters = data.get('no_of_semester', 1)
+            num_credits = data.get('num_credits', 0)
 
-    form = CurriculumForm(instance=curriculum)
-    submitbutton= request.POST.get('Submit')
-    if submitbutton:
-        if request.method == 'POST':
-            form = CurriculumForm(request.POST, instance=curriculum)
-            if form.is_valid():
-                form.save()
-                no_of_semester = int(form.cleaned_data['no_of_semester'])
-                old_no_of_semester = Semester.objects.filter(curriculum=curriculum).count()
-                if(old_no_of_semester != no_of_semester):
-                    
-                    if(old_no_of_semester > no_of_semester):
-                        for semester_no in range(no_of_semester+1, old_no_of_semester+1):
-                            try:
-                                OldSemester = Semester.objects.filter(curriculum=curriculum).filter(semester_no=semester_no)
-                                OldSemester.delete()
-                            except:
-                                print("Failed to remove old semester")
-                                
-                                
-                    elif(old_no_of_semester < no_of_semester):
-                        for semester_no in range(max(1, old_no_of_semester), no_of_semester+1):
-                            try:
-                                NewSemester = Semester(curriculum=curriculum,semester_no=semester_no)
-                                NewSemester.save()
-                            except:
-                                print("Failed to add new semester")            
+            # Fetch the existing curriculum
+            curriculum = get_object_or_404(Curriculum, id=curriculum_id)
 
-                messages.success(request, "Updated "+ curriculum.name +" successful")
-                return HttpResponseRedirect('/programme_curriculum/admin_curriculum_semesters/' + str(curriculum.id) + '/')
+            # Validate that the programme exists
+            try:
+                programme = Programme.objects.get(id=programme_id)
+            except Programme.DoesNotExist:
+                return JsonResponse({'error': 'Invalid programme ID'}, status=status.HTTP_400_BAD_REQUEST)
 
-    return render(request, 'programme_curriculum/acad_admin/add_curriculum_form.html',{'form':form,  'submitbutton': submitbutton})
+            # Update the curriculum fields
+            curriculum.name = curriculum_name
+            curriculum.programme = programme
+            curriculum.working_curriculum = working_curriculum
+            curriculum.version = version_no
+            curriculum.no_of_semester = num_semesters
+            curriculum.min_credit = num_credits
+            curriculum.save()
+
+            # Handle semester updates
+            old_no_of_semesters = Semester.objects.filter(curriculum=curriculum).count()
+            new_no_of_semesters = num_semesters
+
+            if old_no_of_semesters != new_no_of_semesters:
+                if old_no_of_semesters > new_no_of_semesters:
+                    # Remove extra semesters
+                    for semester_no in range(new_no_of_semesters + 1, old_no_of_semesters + 1):
+                        try:
+                            Semester.objects.filter(curriculum=curriculum, semester_no=semester_no).delete()
+                        except Exception as e:
+                            return JsonResponse({'error': f'Failed to remove old semester: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                elif old_no_of_semesters < new_no_of_semesters:
+                    # Add new semesters
+                    semesters = [
+                        Semester(curriculum=curriculum, semester_no=semester_no)
+                        for semester_no in range(old_no_of_semesters + 1, new_no_of_semesters + 1)
+                    ]
+                    Semester.objects.bulk_create(semesters)
+
+            return JsonResponse({'message': 'Curriculum updated successfully!'}, status=status.HTTP_200_OK)
+        except Exception as e:
+            return JsonResponse({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+    return JsonResponse({'error': 'Invalid request method.'}, status=status.HTTP_405_METHOD_NOT_ALLOWED)
+
 
 
 def add_course_form(request):
@@ -1172,57 +1253,156 @@ def update_course_form(request, course_id):
                     
     return render(request,'programme_curriculum/acad_admin/course_form.html',{'course':course, 'form':form, 'submitbutton': submitbutton,'version_error':version_error})
 
+@permission_classes([IsAuthenticated])
+@api_view(['POST'])
 def add_courseslot_form(request):
+    try:
+        # Check permissions
+        # user_details = ExtraInfo.objects.get(user=request.user)
+        # des = HoldsDesignation.objects.filter(user=request.user).first()
+        
+        # if request.session['currentDesignationSelected'] not in ["acadadmin"]:
+        #     return JsonResponse({
+        #         'status': 'error',
+        #         'message': 'Permission denied'
+        #     }, status=403)
+
+        # Parse the JSON data
+        data = json.loads(request.body)
+        
+        # Create the course slot
+        course_slot = CourseSlot.objects.create(
+            semester_id=data['semester'],
+            name=data['name'],
+            type=data['type'],
+            course_slot_info=data.get('course_slot_info', ''),
+            duration=data.get('duration', 1),
+            min_registration_limit=data.get('min_registration_limit', 0),
+            max_registration_limit=data.get('max_registration_limit', 1000)
+        )
+        
+        # Add courses if provided
+        if 'courses' in data and data['courses']:
+            course_slot.courses.set(data['courses'])
+
+        return JsonResponse({
+            'status': 'success',
+            'message': 'Course slot created successfully',
+            'id': course_slot.id
+        })
+
+    except Exception as e:
+        return JsonResponse({
+            'status': 'error',
+            'message': str(e)
+        }, status=400)
     
-    user_details = ExtraInfo.objects.get(user = request.user)
-    des = HoldsDesignation.objects.all().filter(user = request.user).first()
-    if request.session['currentDesignationSelected']== "student" or request.session['currentDesignationSelected']== "Associate Professor" or request.session['currentDesignationSelected']== "Professor" or request.session['currentDesignationSelected']== "Assistant Professor" :
-        return HttpResponseRedirect('/programme_curriculum/programmes/')
-    elif str(request.user) == "acadadmin" :
-        pass
-    elif 'hod' in request.session['currentDesignationSelected'].lower():
-        return HttpResponseRedirect('/programme_curriculum/programmes/')
+    # user_details = ExtraInfo.objects.get(user = request.user)
+    # des = HoldsDesignation.objects.all().filter(user = request.user).first()
+    # if request.session['currentDesignationSelected']== "student" or request.session['currentDesignationSelected']== "Associate Professor" or request.session['currentDesignationSelected']== "Professor" or request.session['currentDesignationSelected']== "Assistant Professor" :
+    #     return HttpResponseRedirect('/programme_curriculum/programmes/')
+    # elif str(request.user) == "acadadmin" :
+    #     pass
+    # elif 'hod' in request.session['currentDesignationSelected'].lower():
+    #     return HttpResponseRedirect('/programme_curriculum/programmes/')
     
-    curriculum_id = request.GET.get('curriculum_id', -1)
-    submitbutton= request.POST.get('Submit')
-    semester_id = request.GET.get('semester_id', -1)
-    form = CourseSlotForm(initial={'semester': semester_id})
+    # curriculum_id = request.GET.get('curriculum_id', -1)
+    # submitbutton= request.POST.get('Submit')
+    # semester_id = request.GET.get('semester_id', -1)
+    # form = CourseSlotForm(initial={'semester': semester_id})
 
-    if submitbutton:
-        if request.method == 'POST':
-            form = CourseSlotForm(request.POST)
-            if form.is_valid():
-                form.save()
-                courseslot = CourseSlot.objects.last()
-                messages.success(request, "Added Course Slot successful")
-                return HttpResponseRedirect('/programme_curriculum/admin_curriculum_semesters/' + str(courseslot.semester.curriculum.id) + '/')
-    return render(request, 'programme_curriculum/acad_admin/add_courseslot_form.html',{'form':form, 'submitbutton': submitbutton, 'curriculum_id': curriculum_id})
+    # if submitbutton:
+    #     if request.method == 'POST':
+    #         form = CourseSlotForm(request.POST)
+    #         if form.is_valid():
+    #             form.save()
+    #             courseslot = CourseSlot.objects.last()
+    #             messages.success(request, "Added Course Slot successful")
+    #             return HttpResponseRedirect('/programme_curriculum/admin_curriculum_semesters/' + str(courseslot.semester.curriculum.id) + '/')
+    # return render(request, 'programme_curriculum/acad_admin/add_courseslot_form.html',{'form':form, 'submitbutton': submitbutton, 'curriculum_id': curriculum_id})
 
-
+@csrf_exempt  # Use this decorator if you're not using CSRF tokens in your API calls
+@permission_classes([IsAuthenticated])
 def edit_courseslot_form(request, courseslot_id):
-    
-    user_details = ExtraInfo.objects.get(user = request.user)
-    des = HoldsDesignation.objects.all().filter(user = request.user).first()
-    if request.session['currentDesignationSelected']== "student" or request.session['currentDesignationSelected']== "Associate Professor" or request.session['currentDesignationSelected']== "Professor" or request.session['currentDesignationSelected']== "Assistant Professor" :
-        return HttpResponseRedirect('/programme_curriculum/programmes/')
-    elif str(request.user) == "acadadmin" :
-        pass
-    elif 'hod' in request.session['currentDesignationSelected'].lower():
-        return HttpResponseRedirect('/programme_curriculum/programmes/')
-    
+    print(courseslot_id)
+    # Check user permissions
+    # user_details = ExtraInfo.objects.get(user=request.user)
+    # des = HoldsDesignation.objects.all().filter(user=request.user).first()
+    # if request.session['currentDesignationSelected'] in ["student", "Associate Professor", "Professor", "Assistant Professor"]:
+    #     return JsonResponse({'status': 'error', 'message': 'Permission denied'}, status=403)
+    # elif str(request.user) == "acadadmin":
+    #     pass
+    # elif 'hod' in request.session['currentDesignationSelected'].lower():
+    #     return JsonResponse({'status': 'error', 'message': 'Permission denied'}, status=403)
+
+    # Fetch the course slot
     courseslot = get_object_or_404(CourseSlot, Q(id=courseslot_id))
     curriculum_id = courseslot.semester.curriculum.id
-    form = CourseSlotForm(instance=courseslot)
-    submitbutton= request.POST.get('Submit')
-    if submitbutton:
-        if request.method == 'POST':
-            form = CourseSlotForm(request.POST, instance=courseslot)  
+    # print("gaurav")
+    # print("gaurav")
+    # print("gaurav")
+    # print("gaurav")
+    # print("gaurav")
+    # print("gaurav")
+    if request.method == 'GET':
+        # Prepare the course slot data for the frontend
+        courseslot_data = {
+            'id': courseslot.id,
+            'semester': courseslot.semester.id,
+            'name': courseslot.name,
+            'type': courseslot.type,
+            'course_slot_info': courseslot.course_slot_info,
+            'courses': [course.id for course in courseslot.courses.all()],
+            'duration': courseslot.duration,
+            'min_registration_limit': courseslot.min_registration_limit,
+            'max_registration_limit': courseslot.max_registration_limit,
+            'curriculum_id': curriculum_id,
+        }
+        print(courseslot_data)
+        return JsonResponse({'status': 'success', 'courseslot': courseslot_data})
+
+    elif request.method == 'PUT':
+        # Handle updating the course slot
+        try:
+            data = json.loads(request.body)  # Parse JSON data from the request body
+            form = CourseSlotForm(data, instance=courseslot)
             if form.is_valid():
                 form.save()
-                messages.success(request, "Updated "+ str(courseslot.name) +" successful")
-                return HttpResponseRedirect('/programme_curriculum/admin_curriculum_semesters/' + str(courseslot.semester.curriculum.id) + '/')  
+                return JsonResponse({'status': 'success', 'message': 'Course slot updated successfully', 'redirect_url': f'/programme_curriculum/admin_curriculum_semesters/{curriculum_id}/'})
+            else:
+                return JsonResponse({'status': 'error', 'errors': form.errors}, status=400)
+        except Exception as e:
+            return JsonResponse({'status': 'error', 'message': str(e)}, status=500)
 
-    return render(request,'programme_curriculum/acad_admin/add_courseslot_form.html',{'courseslot':courseslot, 'form':form, 'submitbutton':submitbutton, 'curriculum_id': curriculum_id})
+    else:
+        return JsonResponse({'status': 'error', 'message': 'Invalid request method'}, status=405)
+    
+
+
+# def edit_courseslot_form(request, courseslot_id):
+    
+#     user_details = ExtraInfo.objects.get(user = request.user)
+#     des = HoldsDesignation.objects.all().filter(user = request.user).first()
+#     if request.session['currentDesignationSelected']== "student" or request.session['currentDesignationSelected']== "Associate Professor" or request.session['currentDesignationSelected']== "Professor" or request.session['currentDesignationSelected']== "Assistant Professor" :
+#         return HttpResponseRedirect('/programme_curriculum/programmes/')
+#     elif str(request.user) == "acadadmin" :
+#         pass
+#     elif 'hod' in request.session['currentDesignationSelected'].lower():
+#         return HttpResponseRedirect('/programme_curriculum/programmes/')
+    
+#     courseslot = get_object_or_404(CourseSlot, Q(id=courseslot_id))
+#     curriculum_id = courseslot.semester.curriculum.id
+#     form = CourseSlotForm(instance=courseslot)
+#     submitbutton= request.POST.get('Submit')
+#     if submitbutton:
+#         if request.method == 'POST':
+#             form = CourseSlotForm(request.POST, instance=courseslot)  
+#             if form.is_valid():
+#                 form.save()
+#                 messages.success(request, "Updated "+ str(courseslot.name) +" successful")
+#                 return HttpResponseRedirect('/programme_curriculum/admin_curriculum_semesters/' + str(courseslot.semester.curriculum.id) + '/')  
+
+#     return render(request,'programme_curriculum/acad_admin/add_courseslot_form.html',{'courseslot':courseslot, 'form':form, 'submitbutton':submitbutton, 'curriculum_id': curriculum_id})
 
 def delete_courseslot(request, courseslot_id):
     
@@ -1248,57 +1428,167 @@ def delete_courseslot(request, courseslot_id):
     return render(request, 'programme_curriculum/view_a_courseslot.html', {'course_slot': courseslot})
 
 
+@permission_classes([IsAuthenticated])
+@api_view(['POST'])
+@csrf_exempt  # Use this decorator if CSRF is not handled elsewhere
 def add_batch_form(request):
-    
-    user_details = ExtraInfo.objects.get(user = request.user)
-    des = HoldsDesignation.objects.all().filter(user = request.user).first()
-    if request.session['currentDesignationSelected']== "student" or request.session['currentDesignationSelected']== "Associate Professor" or request.session['currentDesignationSelected']== "Professor" or request.session['currentDesignationSelected']== "Assistant Professor" :
-        return HttpResponseRedirect('/programme_curriculum/programmes/')
-    elif str(request.user) == "acadadmin" :
-        pass
-    elif 'hod' in request.session['currentDesignationSelected'].lower():
-        return HttpResponseRedirect('/programme_curriculum/programmes/')
-    
-    curriculum_id = request.GET.get('curriculum_id', -1)
-    form = BatchForm(initial={'curriculum': curriculum_id})
-    submitbutton= request.POST.get('Submit')
-    if submitbutton:
-        if request.method == 'POST':
-            form = BatchForm(request.POST)
-            if form.is_valid():
-                form.save()
-                messages.success(request, "Added Batch successful")
-                return HttpResponseRedirect('/programme_curriculum/admin_batches/')
-    return render(request, 'programme_curriculum/acad_admin/add_batch_form.html',{'form':form, 'submitbutton': submitbutton})
-    
+    """
+    Handle adding a new Batch through an API endpoint.
+    """
+    if request.method == 'POST':
+        data = request.data
 
+        # Map frontend fields to the correct model fields
+        batch_data = {
+            "name": data.get("batch_name"),  
+            "discipline": data.get("discipline"),
+            "year": data.get("batchYear"),
+            "curriculum": data.get("disciplineBatch"),  # Assuming curriculum is disciplineBatch
+            "running_batch": data.get("runningBatch"),  # Assuming running_batch is a field in the model
+        }
+        # data = json.loads(request.body)
+        serializer = BatchSerializer(data=batch_data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response({"message": "Added Batch successfully"}, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    return Response({"error": "Invalid request method"}, status=status.HTTP_405_METHOD_NOT_ALLOWED)
+        # try:
+        #     # Parse the incoming JSON data
+        #     data = json.loads(request.body)
+        #     print("Received data:", data)  # Debugging
+
+            # batch_name = data.get('batch_name')
+            # discipline_id = data.get('discipline')
+            # batch_year = data.get('batchYear')
+            # curriculum_id = data.get('disciplineBatch')  # Default to empty string if not provided
+            # running_batch = data.get('runningBatch', False)  # Default to False if not provided
+
+        #     print('Discipline ID:', discipline_id)  # Debugging
+        #     print('Curriculum ID:', curriculum_id)  # Debugging
+
+        #     # Validate that the discipline exists
+        #     try:
+        #         discipline = Discipline.objects.get(id=discipline_id)
+        #     except Discipline.DoesNotExist:
+        #         return JsonResponse({'error': 'Invalid discipline ID'}, status=400)
+
+        #     # Validate that the curriculum exists (if provided)
+        #     curriculum = None
+        #     if curriculum_id:  # Only fetch curriculum if curriculum_id is not empty
+        #         try:
+        #             curriculum = Curriculum.objects.get(id=curriculum_id)
+        #         except Curriculum.DoesNotExist:
+        #             return JsonResponse({'error': 'Invalid curriculum ID'}, status=400)
+
+        #     print('Curriculum:', curriculum)  # Debugging
+
+        #     # Create the new Batch instance
+            
+            
+        #     batch = Batch(
+        #         name=batch_name,
+        #         discipline=discipline,
+        #         year=batch_year,
+        #         running_batch=running_batch
+        #     )
+        #     # batch.save()
+        #     if curriculum:
+        #         batch.curriculum = curriculum
+        #     print(batch)
+        #     batch.save()
+
+        #     return JsonResponse({'message': 'Batch added successfully!'}, status=201)
+        # except Exception as e:
+        #     return JsonResponse({'error': str(e)}, status=400)
+    # return JsonResponse({'error': 'Invalid request method.'}, status=405)
+@csrf_exempt  # Use this decorator if you're not using CSRF tokens in your API calls
+@permission_classes([IsAuthenticated])
 def edit_batch_form(request, batch_id):
     
-    user_details = ExtraInfo.objects.get(user = request.user)
-    des = HoldsDesignation.objects.all().filter(user = request.user).first()
-    if request.session['currentDesignationSelected']== "student" or request.session['currentDesignationSelected']== "Associate Professor" or request.session['currentDesignationSelected']== "Professor" or request.session['currentDesignationSelected']== "Assistant Professor" :
-        return HttpResponseRedirect('/programme_curriculum/programmes/')
-    elif str(request.user) == "acadadmin" :
-        pass
-    elif 'hod' in request.session['currentDesignationSelected'].lower():
-        return HttpResponseRedirect('/programme_curriculum/programmes/')
-    
-    curriculum_id = request.GET.get('curriculum_id', -1)
+    # user_details = ExtraInfo.objects.get(user = request.user)
+    # des = HoldsDesignation.objects.all().filter(user = request.user).first()
+    # if request.session['currentDesignationSelected']== "student" or request.session['currentDesignationSelected']== "Associate Professor" or request.session['currentDesignationSelected']== "Professor" or request.session['currentDesignationSelected']== "Assistant Professor" :
+    #     return HttpResponseRedirect('/programme_curriculum/programmes/')
+    # elif str(request.user) == "acadadmin" :
+    #     pass
+    # elif 'hod' in request.session['currentDesignationSelected'].lower():
+    #     return HttpResponseRedirect('/programme_curriculum/programmes/')
+    print('gaurav',batch_id)
+    # Fetch the course slot
     batch = get_object_or_404(Batch, Q(id=batch_id))
-    if curriculum_id != -1:
-        batch.curriculum = Curriculum.objects.get(id=curriculum_id)
-    form = BatchForm(instance=batch)
-    submitbutton= request.POST.get('Submit')
-    if submitbutton:
-        if request.method == 'POST':
-            form = BatchForm(request.POST, instance=batch)  
-            if form.is_valid():
-                form.save()
-                messages.success(request, "Updated "+ batch.name +" successful")
-                return HttpResponseRedirect("/programme_curriculum/admin_batches/")  
+    if request.method == 'GET':
+        # Prepare the course slot data for the frontend
+        batch_data = {
+            'id': batch.id,
+            'discipline': batch.discipline_id,
+            'name': batch.name,
+            'year': batch.year,
+            'curriculum_id': batch.curriculum_id,
+            'running_batch':batch.running_batch,
+        }
+        curriculum = get_object_or_404(Curriculum,Q(id=batch.curriculum_id))
 
-    return render(request,'programme_curriculum/acad_admin/add_batch_form.html',{'batch':batch, 'form':form, 'submitbutton':submitbutton})
+        # Serialize the unused curricula
+        curricula_data =[ 
+            {
+                'id': curriculum.id,
+                'name': curriculum.name,
+                'version': curriculum.version,
+                # 'discipline': curriculum.discipline.name,
+                # 'programme': curriculum.programme.name,
+            }
+        ]
+        
+        print(batch_data)
+        print(curricula_data)
+        return JsonResponse({'status': 'success', 'batch': batch_data,'curriculum':curricula_data})
+    
+    elif request.method == 'PUT':
+        try:
+            # Fetch the existing batch instance
+            try:
+                batch = Batch.objects.get(id=batch_id)
+            except Batch.DoesNotExist:
+                return JsonResponse({'error': 'Batch not found'}, status=status.HTTP_404_NOT_FOUND)
 
+            # Parse the incoming JSON data
+            data = json.loads(request.body)
+
+            # Update batch fields
+            batch.name = data.get('batch_name', batch.name)  # Use existing value if not provided
+            batch.year = data.get('batchYear', batch.year)  # Use existing value if not provided
+            batch.running_batch = data.get('runningBatch', batch.running_batch)  # Use existing value if not provided
+
+            # Update discipline (if provided)
+            discipline_id = data.get('discipline')
+            if discipline_id:
+                try:
+                    discipline = Discipline.objects.get(id=discipline_id)
+                    batch.discipline = discipline
+                except Discipline.DoesNotExist:
+                    return JsonResponse({'error': 'Invalid discipline ID'}, status=status.HTTP_400_BAD_REQUEST)
+
+            # Update curriculum (if provided)
+            curriculum_id = data.get('disciplineBatch')
+            if curriculum_id:
+                try:
+                    curriculum = Curriculum.objects.get(id=curriculum_id)
+                    batch.curriculum = curriculum
+                except Curriculum.DoesNotExist:
+                    return JsonResponse({'error': 'Invalid curriculum ID'}, status=status.HTTP_400_BAD_REQUEST)
+            else:
+                batch.curriculum = None  # Set curriculum to None if not provided
+
+            # Save the updated batch
+            batch.save()
+
+            return JsonResponse({'status': status.HTTP_200_OK, 'message': 'Batch updated successfully'})
+        except Exception as e:
+            return JsonResponse({'status': 'error', 'message': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    return JsonResponse({'error': 'Invalid request method'}, status=status.HTTP_405_METHOD_NOT_ALLOWED)
+
+    
 
 def instigate_semester(request, semester_id):
     """
@@ -1942,3 +2232,120 @@ def file_unarchive(request,FileId):
     file.is_archive=False
     file.save()
     return HttpResponseRedirect('/programme_curriculum/view_course_proposal_forms/')
+
+
+def course_slot_type_choices(request):
+    """
+    API endpoint to return the list of course slot type choices from the CourseSlot model.
+    """
+    choices = [{'value': key, 'label': label} for key, label in CourseSlot._meta.get_field('type').choices]
+    # print(choices)
+    return JsonResponse({'choices': choices})
+
+
+def semester_details(request):
+    curriculum_id = request.GET.get('curriculum_id')
+
+    if not curriculum_id:
+        return JsonResponse({'error': 'Missing curriculum_id parameter'}, status=400)
+
+    curriculum = get_object_or_404(Curriculum, id=curriculum_id)
+
+    # Retrieve curriculum details
+    curriculum_name = curriculum.name
+    curriculum_version = curriculum.version  # Ensure this field exists in the model
+
+    # Get all semesters related to the given curriculum ID
+    semesters = Semester.objects.filter(curriculum_id=curriculum_id).order_by('semester_no')
+    semester_list = [
+        {
+            "semester_id": semester.id,
+            "semester_number": semester.semester_no
+        }
+        for semester in semesters
+    ]
+
+    data = {
+        "curriculum_name": curriculum_name,
+        "curriculum_version": curriculum_version,
+        "semesters": semester_list,
+    }
+
+    print("data:", data)
+    return JsonResponse(data)
+
+@api_view(['GET'])
+def get_programme(request, programme_id):
+    program = get_object_or_404(Programme, id=programme_id)
+    # curriculums = program.curriculums.all()
+
+    # Filtering working and past curriculums
+    # working_curriculums = curriculums.filter(working_curriculum=1)
+    # past_curriculums = curriculums.filter(working_curriculum=0)
+
+    data = {
+        'program': {
+            # 'id': program.id,
+            'category': program.category,
+            'name': program.name,
+            # 'beginyear': program.programme_begin_year,
+        },
+        # 'working_curriculums': CurriculumSerializer(working_curriculums, many=True).data,
+        # 'past_curriculums': CurriculumSerializer(past_curriculums, many=True).data,
+    }
+    return JsonResponse(data)
+
+
+def get_batch_names(request):
+    choices = [{'value': key, 'label': label} for key, label in Batch._meta.get_field('name').choices]
+    # print('choices',choices)
+
+    # batch_names = Batch.objects.values_list('name', flat=True).distinct()
+    # print(batch_names)
+    # # Convert the QuerySet to a list
+    # batch_names_list = list(batch_names)
+    # print(batch_names_list)
+    # Return the list as a JSON response
+    return JsonResponse({'choices': choices})
+
+
+def get_all_disciplines(request):
+    # Fetch all disciplines from the database
+    disciplines = Discipline.objects.all()
+    
+    # Serialize the disciplines into a list of dictionaries
+    disciplines_data = [
+        {
+            'id': discipline.id,
+            'name': discipline.name,
+            'acronym': discipline.acronym,
+            'programmes': [programme.name for programme in discipline.programmes.all()]
+        }
+        for discipline in disciplines
+    ]
+    
+    # Return the serialized data as a JSON response
+    return JsonResponse(disciplines_data, safe=False)
+
+def get_unused_curriculam(request):
+    # Fetch all curriculum IDs that are present in the Batch table
+    used_curriculum_ids = Batch.objects.exclude(curriculum__isnull=True).values_list('curriculum_id', flat=True)
+
+    # Fetch curricula whose IDs are not in the used_curriculum_ids list
+    unused_curricula = Curriculum.objects.exclude(id__in=used_curriculum_ids)
+
+    # Serialize the unused curricula
+    unused_curricula_data = [
+        {
+            'id': curriculum.id,
+            'name': curriculum.name,
+            'version': curriculum.version,
+            # 'discipline': curriculum.discipline.name,
+            # 'programme': curriculum.programme.name,
+        }
+        for curriculum in unused_curricula
+    ]
+    print(unused_curricula_data)
+
+    # Return the serialized data as a JSON response
+    return JsonResponse(unused_curricula_data, safe=False)

@@ -35,6 +35,7 @@ COURSESLOT_TYPE_CHOICES = [
     ('Swayam', 'Swayam'),
     ('Project', 'Project'),
     ('Optional', 'Optional'),
+    ('Backlog', 'Backlog'),
     ('Others', 'Others')
 ]
 
@@ -261,6 +262,7 @@ class Course(models.Model):
     working_course = models.BooleanField(default=True)
     disciplines = models.ManyToManyField(Discipline, blank=True)
     latest_version = models.BooleanField(default=True)
+    max_seats = models.IntegerField(default=90)
 
     class Meta:
         unique_together = ('code', 'version')
@@ -278,10 +280,6 @@ class Batch(models.Model):
     '''
         Current Purpose : To store the details regarding a batch(eg details of curriculum assigned for batch)
 
-
-
-
-
         ATTRIBUTES :
 
         name(char) -  to store the type of batch(eg Btech/Mtech/Phd, not nullable)
@@ -291,8 +289,7 @@ class Batch(models.Model):
         running_batch(Boolean) - to denote whether the batch is currently active or has graduated
 
     '''
-    name = models.CharField(choices=BATCH_NAMES,
-                            max_length=50, null=False, blank=False)
+    name = models.CharField(choices=BATCH_NAMES,max_length=50, null=False, blank=False)
     discipline = models.ForeignKey(
         Discipline, null=False, on_delete=models.CASCADE)
     year = models.PositiveIntegerField(
@@ -347,14 +344,27 @@ class CourseSlot(models.Model):
         return ((Semester.objects.get(id=self.semester.id)).curriculum).batches
 
 
+# class CourseInstructor(models.Model):
+#     course_id = models.ForeignKey(Course, on_delete=models.CASCADE)
+#     instructor_id = models.ForeignKey(ExtraInfo, on_delete=models.CASCADE)
+#     batch_id = models.ForeignKey(Batch, on_delete=models.CASCADE, default=1)
+#     # change extra info to faculty(globals)
+
+#     class Meta:
+#         unique_together = ('course_id', 'instructor_id', 'batch_id')
+
 class CourseInstructor(models.Model):
     course_id = models.ForeignKey(Course, on_delete=models.CASCADE)
-    instructor_id = models.ForeignKey(ExtraInfo, on_delete=models.CASCADE)
-    batch_id = models.ForeignKey(Batch, on_delete=models.CASCADE, default=1)
-    # change extra info to faculty(globals)
+    # instructor_id = models.ForeignKey(ExtraInfo, on_delete=models.CASCADE)
+    instructor_id = models.ForeignKey(Faculty, on_delete=models.CASCADE)
+    year = models.IntegerField(default=datetime.date.today().year, null=False)  # Default to the current year
+    semester_no = models.IntegerField(
+        default=1,  # Set default semester as 1
+        validators=[MinValueValidator(1), MaxValueValidator(8)]  # Constraint for semesters
+    )
 
     class Meta:
-        unique_together = ('course_id', 'instructor_id', 'batch_id')
+        unique_together = ('course_id', 'instructor_id', 'year')
 
 #new
 class NewProposalFile(models.Model):
@@ -372,6 +382,7 @@ class NewProposalFile(models.Model):
     pre_requisits = models.TextField(null=True, blank=True)
     pre_requisit_courses = models.ManyToManyField(Course, blank=True)
     syllabus = models.TextField()
+    max_seats = models.IntegerField(default=90)
     percent_quiz_1 = models.PositiveIntegerField(
         default=10, null=False, blank=False)
     percent_midsem = models.PositiveIntegerField(
