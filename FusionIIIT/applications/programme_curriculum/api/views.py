@@ -25,6 +25,7 @@ from django.core.exceptions import PermissionDenied
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework import status
+import re
 
 from notification.views import prog_and_curr_notif
 # from applications.academic_information.models import Student
@@ -118,7 +119,9 @@ def view_curriculums_of_a_programme(request, programme_id):
 
     # Fetch program and related curriculums
     program = get_object_or_404(Programme, id=programme_id)
+    print(program.name)
     curriculums = program.curriculums.all()  # Adjust if it's a related name
+
 
     # Apply filters
     curriculumfilter = CurriculumFilter(request.GET, queryset=curriculums)
@@ -132,11 +135,13 @@ def view_curriculums_of_a_programme(request, programme_id):
     # Prepare JSON data
     data = {
         'program': model_to_dict(program),
+        'name':program.name,
         # 'working_curriculums': [model_to_dict(c) for c in working_curriculums],
         'working_curriculums': [
             {
                 **model_to_dict(c),
-                'batches': [model_to_dict(b) for b in c.batches.all()]  # Add batches for each curriculum
+                'batches': [model_to_dict(b) for b in c.batches.all()]
+                # Add batches for each curriculum
             }
             for c in working_curriculums
         ],
@@ -1738,142 +1743,319 @@ def view_a_course_proposal_form(request,CourseProposal_id):
     return render(request, 'programme_curriculum/faculty/view_a_course_proposal.html', {'proposal': proposalform,'notifications': notifs,})
 
 
+@permission_classes([IsAuthenticated])
+@csrf_exempt  # Only for development, remove in production with proper CSRF handling
 def new_course_proposal_file(request):
-    des = HoldsDesignation.objects.all().filter(user = request.user).first()
-    if request.session['currentDesignationSelected'] == "Associate Professor" or request.session['currentDesignationSelected'] == "Professor" or request.session['currentDesignationSelected'] == "Assistant Professor":
-        pass
-    elif request.session['currentDesignationSelected'] == "acadadmin" :
-        return HttpResponseRedirect('/programme_curriculum/admin_programmes')
-    else:
-        return HttpResponseRedirect('/programme_curriculum/programmes')
+    # des = HoldsDesignation.objects.all().filter(user = request.user).first()
+    # if request.session['currentDesignationSelected'] == "Associate Professor" or request.session['currentDesignationSelected'] == "Professor" or request.session['currentDesignationSelected'] == "Assistant Professor":
+    #     pass
+    # elif request.session['currentDesignationSelected'] == "acadadmin" :
+    #     return HttpResponseRedirect('/programme_curriculum/admin_programmes')
+    # else:
+    #     return HttpResponseRedirect('/programme_curriculum/programmes')
+    print("new course proposal file")
     
-    uploader = request.user.extrainfo
-    design=request.session['currentDesignationSelected']
-    form=NewCourseProposalFile(initial={'uploader':des.user,'designation':design})
-    submitbutton= request.POST.get('Submit')
-    
-    if submitbutton:
-        if request.method == 'POST':
-            form = NewCourseProposalFile(request.POST)  
+    if request.method == 'POST':
+        try:
+            # Parse JSON data from request body
+            data = json.loads(request.body)
+            
+            # Create form data dictionary mapping frontend fields to model fields
+            form_data = {
+                'name': data.get('name'),
+                'code': data.get('code'),
+                'credit': data.get('credit'),
+                'version': data.get('version'),
+                'lecture_hours': data.get('lecture_hours'),
+                'tutorial_hours': data.get('tutorial_hours'),
+                'pratical_hours': data.get('pratical_hours'),
+                'project_hours': data.get('project_hours'),
+                'discussion_hours': data.get('discussion_hours'),
+                'syllabus': data.get('syllabus'),
+                'percent_quiz_1': data.get('percent_quiz_1'),
+                'percent_midsem': data.get('percent_midsem'),
+                'percent_quiz_2': data.get('percent_quiz_2'),
+                'percent_endsem': data.get('percent_endsem'),
+                'percent_project': data.get('percent_project'),
+                'percent_lab_evaluation': data.get('percent_lab_evaluation'),
+                'percent_course_attendance': data.get('percent_course_attendance'),
+                'ref_books': data.get('ref_books'),
+                'disciplines': data.get('disciplines'),
+                # 'pre_requisit_courses': data.get('pre_requisit_courses'),
+                'pre_requisits': data.get('pre_requisits'),
+                'max_seats': data.get('maxSeats'),
+                'subject': data.get('Title'),
+                'description': data.get('Description'),
+                'uploader': data.get('uploader'),
+                'designation': data.get('Designation'),
+                # 'designation': request.session.get('currentDesignationSelected', ''),
+            }
+            prerequisite_course_ids = data.get('pre_requisit_courses', [])
+            valid_courses = Course.objects.filter(id__in=prerequisite_course_ids)
+            if len(valid_courses) != len(prerequisite_course_ids):
+                invalid_ids = set(prerequisite_course_ids) - set(c.id for c in valid_courses)
+                return JsonResponse({
+                    'status': 'error',
+                    'message': f'Invalid prerequisite course IDs: {invalid_ids}'
+                }, status=400)
+            # Create and validate form
+            form = NewCourseProposalFile(form_data)
+            
             if form.is_valid():
-                new_course=form.save(commit=False)
-                new_course.is_read=False
+                new_course = form.save(commit=False)
+                new_course.is_read = False
                 new_course.save()
-                messages.success(request, "Added successful")
 
-                return HttpResponseRedirect('/programme_curriculum/view_course_proposal_forms/')
+                if prerequisite_course_ids:
+                    new_course.pre_requisit_courses.add(*valid_courses)
+                
+                return JsonResponse({
+                    'status': 'success',
+                    'message': 'Course added successfully',
+                    'course_id': new_course.id,
+                    'prerequisite_courses_added': len(prerequisite_course_ids)
+                }, status=201)
+            else:
+                print(form.errors)
+                return JsonResponse({
+                    'status': 'error',
+                    'message': 'Invalid form data',
+                    'errors': form.errors
+                }, status=400)
+                
+        except json.JSONDecodeError:
+            print("error")
 
-    return render(request,'programme_curriculum/faculty/course_proposal_form.html',{'form':form,'submitbutton': submitbutton})
-
-
-
-def filetracking(request,proposal_id):
-
-
-    des = HoldsDesignation.objects.all().filter(user = request.user).first()
-    if request.session['currentDesignationSelected'] == "Associate Professor" or request.session['currentDesignationSelected'] == "Professor" or request.session['currentDesignationSelected'] == "Assistant Professor" or request.session['currentDesignationSelected'] == "Dean Academic":
-        pass
-    elif 'hod' in request.session['currentDesignationSelected'].lower():
-        pass
-    elif request.session['currentDesignationSelected'] == "acadadmin":
-        return HttpResponseRedirect('/programme_curriculum/admin_programmes')
-    uploader = request.user.extrainfo
-    design=request.session['currentDesignationSelected']
-    file = get_object_or_404(NewProposalFile, Q(id=proposal_id))
-    file_data=file.name+' '+file.code
-    form=CourseProposalTrackingFile(initial={'current_id':file.uploader,'current_design':file.designation,'file_id':int(proposal_id)})
+            return JsonResponse({
+                'status': 'error',
+                'message': 'Invalid JSON data'
+            }, status=400)
+        except Exception as e:
+            return JsonResponse({
+                'status': 'error',
+                'message': str(e)
+            }, status=500)
     
-    submitbutton= request.POST.get('Submit')
-    
-    if submitbutton:
-        if request.method == 'POST':
-            form = CourseProposalTrackingFile(request.POST)
+    return JsonResponse({
+        'status': 'error',
+        'message': 'Only POST requests are allowed'
+    }, status=405)
+
+@permission_classes([IsAuthenticated])
+@csrf_exempt  # Remove in production and use proper CSRF handling
+def filetracking(request, proposal_id):
+    if request.method == 'POST':
+        try:
+            # Parse JSON data from request body
+            data = json.loads(request.body)
+            
+            # Get the file being tracked
+            file = get_object_or_404(NewProposalFile, id=proposal_id)
+            print(file)
+            # Get user objects from IDs
+            try:
+                receiver_user = User.objects.get(username=data.get('receiverId'))
+                receiver_designation = Designation.objects.get(name=data.get('receiverDesignation'))
+                print("receiver_user",receiver_user)
+                print("receiver des",receiver_designation)
+                print(data.get('discipline'))
+                discipline = Discipline.objects.get(id=data.get('discipline'))  # Assuming single discipline
+                print(discipline)
+            except (User.DoesNotExist, Designation.DoesNotExist, Discipline.DoesNotExist) as e:
+                return JsonResponse({
+                    'status': 'error',
+                    'message': f'Invalid reference: {str(e)}'
+                }, status=400)
+            
+            # Create tracking record
+            tracking_data = {
+                'file_id': proposal_id,
+                'current_id': data.get('uploader'),
+                'current_design': data.get('designation'),
+                'receive_id': receiver_user.id,
+                'receive_design': receiver_designation.id,
+                'disciplines': discipline.id,
+                'remarks': data.get('remarks', ''),
+                # 'is_submitted': True
+            }
+            print(tracking_data)
+            form = CourseProposalTrackingFile(tracking_data)
+            
             if form.is_valid():
                 try:
-                    form.is_read=False
-                    form.save()
-                    receiver=request.POST.get('receive_id')
-                    receiver_id = User.objects.get(id=receiver)
-                    receiver_design=request.POST.get('receive_design')
-                    receiver_des= Designation.objects.get(id=receiver_design)
-                    uploader=request.POST.get('current_id')
-                    uploader_design=request.POST.get('current_design')
+                    tracking = form.save(commit=False)
+                    tracking.save()
                     
-                    data='Received as '+ str(receiver_id) +'-'+str(receiver_des) +' Course Proposal Form "'+file_data +'"  By   '+str(uploader)+' - '+str(uploader_design)
-                    # data=file.subject
-                    messages.success(request, "Submitted successful")
-                    prog_and_curr_notif(request.user,receiver_id,data)
-                    return HttpResponseRedirect('/programme_curriculum/outward_files/')
-                except IntegrityError as e:
-                # Handle the IntegrityError here, for example:
-                    form.add_error(None, 'Proposal_ tracking with this File id, Current id, Current design and Disciplines already exists.')
-                
+                    # Prepare notification data
+                    file_data = f"{file.name} {file.code}"
+                    notification_data = (
+                        f"Received as {receiver_user} - {receiver_designation} "
+                        f"Course Proposal Form '{file_data}' "
+                        f"By {data.get('uploader')} - {data.get('designation')}"
+                    )
+                    
+                    return JsonResponse({
+                        'status': 'success',
+                        'message': 'File tracking submitted successfully',
+                        'notification': notification_data
+                    }, status=201)
+                    
+                except IntegrityError:
+                    return JsonResponse({
+                        'status': 'error',
+                        'message': 'This file tracking record already exists'
+                    }, status=400)
+            else:
+                return JsonResponse({
+                    'status': 'error',
+                    'message': 'Invalid form data',
+                    'errors': form.errors
+                }, status=400)
+            print("till here is okay")       
+        except json.JSONDecodeError:
+            return JsonResponse({
+                'status': 'error',
+                'message': 'Invalid JSON data'
+            }, status=400)
+        except Exception as e:
+            return JsonResponse({
+                'status': 'error',
+                'message': str(e)
+            }, status=500)
+    
+    return JsonResponse({
+        'status': 'error',
+        'message': 'Only POST requests are allowed'
+    }, status=405)
 
 
-    return render(request,'programme_curriculum/faculty/filetracking.html',{'form':form,'submitbutton': submitbutton,'file_info':file_data,})
-
-
-
+@permission_classes([IsAuthenticated])
+@csrf_exempt
 def inward_files(request):
-    user_details = ExtraInfo.objects.get(user = request.user)
-    des = HoldsDesignation.objects.all().filter(user = request.user).last()
-    data=''
-    
-    if request.session['currentDesignationSelected']  == "Associate Professor" or request.session['currentDesignationSelected']  == "Professor" or request.session['currentDesignationSelected']  == "Assistant Professor" :
-        data=f'As a "{request.session["currentDesignationSelected"]}" you cannot receive any proposal requests'
-        pass
-    elif 'hod' in request.session['currentDesignationSelected'].lower():
-        pass
-    elif request.session['currentDesignationSelected'] == "Dean Academic":
-        pass
-    elif request.session['currentDesignationSelected']  == "acadadmin" :
-        return HttpResponseRedirect('/programme_curriculum/admin_programmes/')
-    else:
-        return HttpResponseRedirect('/programme_curriculum/programmes/')
-    
-    id=request.user
-    user_designation=HoldsDesignation.objects.select_related('user','working','designation').filter(user=request.user)
-    notifs = request.user.notifications.all()
-    designation = Designation.objects.get(name=request.session['currentDesignationSelected'])
-    des_id = designation.id
-    
-    courseProposal = Proposal_Tracking.objects.filter(receive_design = des_id,receive_id= id)
 
-    
-    return render(request, 'programme_curriculum/faculty/inward_course_forms.html',{'courseProposals': courseProposal,'design':request.session['currentDesignationSelected'],'data':data,'notifications': notifs,})
+    try:
 
+        username = request.GET.get('username')
+        designation_name = request.GET.get('des')
+        print("username ",username)
+        print("designation ",designation_name)
+        if not username or not designation_name:
+            return JsonResponse({
+                'status': 'error',
+                'message': 'Username and designation are required'
+            }, status=400)
+        
+        # Get user and designation objects
+        user = User.objects.get(username=username)
+        print('user',user)
+        designation = Designation.objects.get(name=designation_name)
+        print('des',designation)
+        # Get inward files
+        course_proposals = Proposal_Tracking.objects.filter(
+            receive_design=designation.id,
+            receive_id=user.id
+        ).values(
+            'id',
+            'file_id',
+            'current_id',
+            'current_design',
+            'receive_id__username',
+            'receive_design__name',
+            'remarks',
+            'receive_date',
+            'forward_date',
+            'sender_archive',
+            'receiver_archive'
+        )
+        
+        return JsonResponse({
+            'status': 'success',
+            'courseProposals': list(course_proposals),
+            'designation': designation_name
+        })
+        
+    except User.DoesNotExist:
+        return JsonResponse({
+            'status': 'error',
+            'message': 'User not found'
+        }, status=404)
+    except Designation.DoesNotExist:
+        return JsonResponse({
+            'status': 'error',
+            'message': 'Designation not found'
+        }, status=404)
+    except Exception as e:
+        return JsonResponse({
+            'status': 'error',
+            'message': str(e)
+        }, status=500)
 
-
+@permission_classes([IsAuthenticated])
+@csrf_exempt
 def outward_files(request):
-    user_details = ExtraInfo.objects.get(user = request.user)
-    des = HoldsDesignation.objects.all().filter(user = request.user).last()
-    data=''
-    if request.session['currentDesignationSelected'] == "Dean Academic" :
-        data=f'As a "{request.session["currentDesignationSelected"]}" you cannot have any out going files'
-        pass
-    elif request.session['currentDesignationSelected']  == "Associate Professor" or request.session['currentDesignationSelected']  == "Professor" or request.session['currentDesignationSelected']  == "Assistant Professor" :
-        pass
-    elif 'hod' in request.session['currentDesignationSelected'].lower():
-        pass
-    elif request.session['currentDesignationSelected']  == "student" :
-        return HttpResponseRedirect('/programme_curriculum/programmes/')
-    elif request.session['currentDesignationSelected']== "acadadmin":
-        return render(request, 'programme_curriculum/admin_programmes/')
-    
-    id=request.user
-    notifs = request.user.notifications.all()
-    user_designation=HoldsDesignation.objects.select_related('user','working','designation').filter(user=request.user)
-    design=request.session['currentDesignationSelected']
-    
-    
-    designation = Designation.objects.get(name=request.session['currentDesignationSelected'])
-    des_id = designation.id
-    
-    courseProposal = Proposal_Tracking.objects.filter(current_design = design,current_id= des.user)
+    try:
+        # Get user details
+        # user_details = ExtraInfo.objects.get(user=request.user)
+        
+        # Get current designation
+        current_designation = request.GET.get('des', '')
+        current_username = request.GET.get('username', '') 
+       
+        if not current_designation:
+            return JsonResponse({
+                'status': 'error',
+                'message': 'Designation is required'
+            }, status=400)
 
-    
-    return render(request, 'programme_curriculum/faculty/outward_course_forms.html',{'courseProposals': courseProposal,'design':request.session['currentDesignationSelected'],'data':data,'notifications': notifs,})
+        # Check permissions based on designation
+        if current_designation.lower() == "dean academic":
+            return JsonResponse({
+                'status': 'success',
+                'message': f'As a "{current_designation}" you cannot have any outgoing files',
+                'courseProposals': []
+            })
+        
+        try:
+            designation = Designation.objects.get(name=current_designation)
+        except Designation.DoesNotExist:
+            return JsonResponse({
+                'status': 'error',
+                'message': 'Invalid designation'
+            }, status=400)
 
+        # Get outward files
+        course_proposals = Proposal_Tracking.objects.filter(
+            current_design=current_designation,
+            current_id=current_username # Changed from des.user to username
+        ).values(
+            'id',
+            'file_id',
+            'current_id',
+            'current_design',
+            'receive_id__username',
+            'receive_design__name',
+            'remarks',
+            'receive_date',
+            'forward_date',
+            'sender_archive'
+        )
+
+        return JsonResponse({
+            'status': 'success',
+            'courseProposals': list(course_proposals),
+            'designation': current_designation
+        })
+
+    except ExtraInfo.DoesNotExist:
+        return JsonResponse({
+            'status': 'error',
+            'message': 'User details not found'
+        }, status=404)
+    except Exception as e:
+        return JsonResponse({
+            'status': 'error',
+            'message': str(e)
+        }, status=500)
 def update_course_proposal_file(request, course_id):
     des = HoldsDesignation.objects.all().filter(user = request.user).first()
     if request.session['currentDesignationSelected'] == "Associate Professor" or request.session['currentDesignationSelected'] == "Professor" or request.session['currentDesignationSelected'] == "Assistant Professor":
@@ -2056,36 +2238,128 @@ def forward_course_forms(request,ProposalId):
     return render(request,'programme_curriculum/faculty/forward.html',{'form':form,'receive_date':file.receive_date,'proposal':file2,'submitbutton': submitbutton,'id':Proposal_D})
 
 
-def view_inward_files(request,ProposalId):
-    
-    if request.session['currentDesignationSelected'] == "Associate Professor" or request.session['currentDesignationSelected'] == "Professor" or request.session['currentDesignationSelected'] == "Assistant Professor" or request.session['currentDesignationSelected'] == "Dean Academic":
-        pass
-    elif 'hod' in request.session['currentDesignationSelected'].lower():
-        pass
-    elif request.session['currentDesignationSelected'] == "acadadmin":
-        return HttpResponseRedirect('/programme_curriculum/admin_programmes/')
-    else:
-        return HttpResponseRedirect('/programme_curriculum/programmes/')
-    
-    des = HoldsDesignation.objects.all().filter(user = request.user).first()
-    uploader = request.user.extrainfo
-    design=request.session['currentDesignationSelected']
-    file = get_object_or_404(Proposal_Tracking, Q(id=ProposalId))
-    file_id = int(file.file_id)
-    file2 = get_object_or_404(NewProposalFile, Q(id=file_id))
-    file_data=''
-    file_data2=''
+# def view_inward_files(request,ProposalId):
+ 
+#     des = HoldsDesignation.objects.all().filter(user = request.user).first()
+#     uploader = request.user.extrainfo
+#     design=request.session['currentDesignationSelected']
+#     file = get_object_or_404(Proposal_Tracking, Q(id=ProposalId))
+#     file_id = int(file.file_id)
+#     file2 = get_object_or_404(NewProposalFile, Q(id=file_id))
+#     file_data=''
+#     file_data2=''
     
     
-    if(file.is_rejected):
-        file_data='"'+str(file2.name) + '"'+' Course Rejected by ' + str(file.receive_id) + ' - ' +str(file.receive_design)
-    if(file.is_added and not file.is_rejected):
-        file_data2='"'+str(file2.code)+' - '+str(file2.name) +'"  Course Added Succesfully'
+#     if(file.is_rejected):
+#         file_data='"'+str(file2.name) + '"'+' Course Rejected by ' + str(file.receive_id) + ' - ' +str(file.receive_design)
+#     if(file.is_added and not file.is_rejected):
+#         file_data2='"'+str(file2.code)+' - '+str(file2.name) +'"  Course Added Succesfully'
     
-    courseProposal = Proposal_Tracking.objects.filter(file_id=file.file_id,disciplines=file.disciplines)
-    form=CourseProposalTrackingFile(initial={'current_id':des.user,'current_design':request.session['currentDesignationSelected'],'file_id':file.file_id,'disciplines':file.disciplines})
+#     courseProposal = Proposal_Tracking.objects.filter(file_id=file.file_id,disciplines=file.disciplines)
+#     form=CourseProposalTrackingFile(initial={'current_id':des.user,'current_design':request.session['currentDesignationSelected'],'file_id':file.file_id,'disciplines':file.disciplines})
 
-    return render(request,'programme_curriculum/faculty/view_file.html',{'form':form,'receive_date':file.receive_date,'proposal':file2,'trackings':courseProposal,'file_info':file_data,'file_sucess':file_data2})
+#     return render(request,'programme_curriculum/faculty/view_file.html',{'form':form,'receive_date':file.receive_date,'proposal':file2,'trackings':courseProposal,'file_info':file_data,'file_sucess':file_data2})
+
+@csrf_exempt
+@permission_classes([IsAuthenticated])
+def view_inward_files(request,ProposalId):
+    try:
+        # Get parameters from frontend
+        # proposal_id = request.GET.get('proposalId')
+        username = request.GET.get('username')
+        designation = request.GET.get('des')
+        
+        if not all([ProposalId, username, designation]):
+            return JsonResponse({
+                'status': 'error',
+                'message': 'proposalId, username and designation are required'
+            }, status=400)
+        
+        # Get the tracking record
+        file = get_object_or_404(Proposal_Tracking, id=ProposalId)
+        file_id = int(file.file_id)
+        proposal_file = get_object_or_404(NewProposalFile, id=file_id)
+        
+        # Get user details
+        # user = request.user
+        # user_details = ExtraInfo.objects.get(user=username)
+        # user_designation = HoldsDesignation.objects.filter(user=username).first()
+        
+        # Prepare response data
+        response_data = {
+            'proposal': {
+                'id': proposal_file.id,
+                'name': proposal_file.name,
+                'code': proposal_file.code,
+                'credit': proposal_file.credit,
+                'uploader': proposal_file.uploader,
+                'designation': proposal_file.designation,
+                'lecture_hours': proposal_file.lecture_hours,
+                'tutorial_hours': proposal_file.tutorial_hours,
+                'pratical_hours': proposal_file.pratical_hours,
+                'project_hours': proposal_file.project_hours,
+                'discussion_hours': proposal_file.discussion_hours,
+                'syllabus': proposal_file.syllabus,
+                'percent_quiz_1': proposal_file.percent_quiz_1,
+                'percent_midsem': proposal_file.percent_midsem,
+                'percent_quiz_2': proposal_file.percent_quiz_2,
+                'percent_endsem': proposal_file.percent_endsem,
+                'percent_project': proposal_file.percent_project,
+                'percent_lab_evaluation': proposal_file.percent_lab_evaluation,
+                'percent_course_attendance': proposal_file.percent_course_attendance,
+                'ref_books': proposal_file.ref_books,
+                'pre_requisits': proposal_file.pre_requisits,
+                'max_seats': proposal_file.max_seats,
+                # 'pre_requisit_courses': list(proposal_file.pre_requisit_courses.values('id', 'name','code','version')),
+
+            },
+            'tracking': {
+                'id': file.id,
+                'file_id': file.file_id,
+                'receive_date': file.receive_date,
+                'forward_date': file.forward_date,
+                'is_rejected': file.is_rejected,
+                'is_added': file.is_added,
+                'receive_id': file.receive_id.username,
+                'receive_design': file.receive_design.name,
+                'current_id': file.current_id,
+                'current_design': file.current_design,
+                'remarks': file.remarks,
+                'disciplines_name': file.disciplines.name,
+                'disciplines_acronym': file.disciplines.acronym,
+            },
+            'trackings': list(Proposal_Tracking.objects.filter(
+                file_id=file.file_id,
+                disciplines=file.disciplines
+            ).values(
+                'id',
+                'current_id',
+                'current_design',
+                'receive_date',
+                'forward_date',
+                'remarks',
+                'is_rejected',
+                'is_added'
+            )),
+            'status_info': {
+                'rejected_message': f'"{proposal_file.name}" Course Rejected by {file.receive_id} - {file.receive_design}' 
+                                    if file.is_rejected else None,
+                'added_message': f'"{proposal_file.code} - {proposal_file.name}" Course Added Successfully' 
+                                if (file.is_added and not file.is_rejected) else None
+            }
+        }
+        
+        return JsonResponse({
+            'status': 'success',
+            'data': response_data
+        })
+        
+    except Exception as e:
+        print(str(e))
+        return JsonResponse({
+            'status': 'error',
+            'message': str(e)
+        }, status=500)
 
 def reject_form(request,ProposalId):
     
@@ -2115,86 +2389,145 @@ def reject_form(request,ProposalId):
         messages.error(request, "course already forwarded or added can't be rejected")
     return HttpResponseRedirect('/programme_curriculum/inward_files/')
 
-
+    
+@csrf_exempt
+@permission_classes([IsAuthenticated])
 def tracking_unarchive(request,ProposalId):
-    if request.session['currentDesignationSelected'] == "Associate Professor" or request.session['currentDesignationSelected'] == "Professor" or request.session['currentDesignationSelected'] == "Assistant Professor" or request.session['currentDesignationSelected'] == "Dean Academic":
-        pass
-    elif 'hod' in request.session['currentDesignationSelected'].lower():
-        pass
-    elif request.session['currentDesignationSelected'] == "acadadmin":
-        return HttpResponseRedirect('/programme_curriculum/admin_programmes/')
-    else:
-        return HttpResponseRedirect('/programme_curriculum/programmes/')
-    
-    track=get_object_or_404(Proposal_Tracking, Q(id=ProposalId))
-    file = get_object_or_404(NewProposalFile,Q(id = track.file_id))
-    print(request.user)
-    if str(track.current_design)==str(request.session['currentDesignationSelected']) and str(track.current_id)==str(request.user):
-        track.sender_archive=False
+    try:
+        # Parse JSON data from request body
+        # data = json.loads(request.body)
+        # proposal_id = request.GET.get('proposalId')
+        username = request.GET.get('username',' ')
+        designation = request.GET.get('des',' ')
+        
+        if not all([username, designation]):
+            return JsonResponse({
+                'status': 'error',
+                'message': 'Missing required fields'
+            }, status=400)
+        
+        # Get the tracking record
+        track = get_object_or_404(Proposal_Tracking, id=ProposalId)
+        
+        # Check if current user is the sender or receiver
+        if (str(track.current_design) == designation and 
+            str(track.current_id) == username):
+            # Current user is the sender
+            track.sender_archive = False
+            action = 'sender_archive'
+        else:
+            # Current user is the receiver
+            track.receiver_archive = False
+            action = 'receiver_archive'
+        
         track.save()
-        messages.success(request, "File UnArchived")
-        return HttpResponseRedirect('/programme_curriculum/outward_files/')
-    else : 
-        track.receiver_archive=False
-        track.save()
-        messages.success(request, "File UnArchived")
-        return HttpResponseRedirect('/programme_curriculum/inward_files/')
-    
-    
-    
+        
+        return JsonResponse({
+            'status': 'success',
+            'message': 'File Unarchived successfully',
+            'action': action,
+            'proposal_id': ProposalId
+        })
+        
+    except json.JSONDecodeError:
+        return JsonResponse({
+            'status': 'error',
+            'message': 'Invalid JSON data'
+        }, status=400)
+    except Exception as e:
+        return JsonResponse({
+            'status': 'error',
+            'message': str(e)
+        }, status=500)
+
+@csrf_exempt
+@permission_classes([IsAuthenticated])
 def tracking_archive(request,ProposalId):
-    
-    if request.session['currentDesignationSelected'] == "Associate Professor" or request.session['currentDesignationSelected'] == "Professor" or request.session['currentDesignationSelected'] == "Assistant Professor" or request.session['currentDesignationSelected'] == "Dean Academic":
-        pass
-    elif 'hod' in request.session['currentDesignationSelected'].lower():
-        pass
-    elif request.session['currentDesignationSelected'] == "acadadmin":
-        return HttpResponseRedirect('/programme_curriculum/admin_programmes/')
-    else:
-        return HttpResponseRedirect('/programme_curriculum/programmes/')
-    
-    track=get_object_or_404(Proposal_Tracking, Q(id=ProposalId))
-    if str(track.current_design)==str(request.session['currentDesignationSelected']) and str(track.current_id)==str(request.user):
-        track.sender_archive=True
+    try:
+        # Parse JSON data from request body
+        # data = json.loads(request.body)
+        # proposal_id = request.GET.get('proposalId')
+        username = request.GET.get('username',' ')
+        designation = request.GET.get('des',' ')
+        
+        if not all([username, designation]):
+            return JsonResponse({
+                'status': 'error',
+                'message': 'Missing required fields'
+            }, status=400)
+        
+        # Get the tracking record
+        track = get_object_or_404(Proposal_Tracking, id=ProposalId)
+        
+        # Check if current user is the sender or receiver
+        if (str(track.current_design) == designation and 
+            str(track.current_id) == username):
+            # Current user is the sender
+            track.sender_archive = True
+            action = 'sender_archive'
+        else:
+            # Current user is the receiver
+            track.receiver_archive = True
+            action = 'receiver_archive'
+        
         track.save()
-        messages.success(request, "File Archived")
-        return HttpResponseRedirect('/programme_curriculum/outward_files/')
+        
+        return JsonResponse({
+            'status': 'success',
+            'message': 'File archived successfully',
+            'action': action,
+            'proposal_id': ProposalId
+        })
+        
+    except json.JSONDecodeError:
+        return JsonResponse({
+            'status': 'error',
+            'message': 'Invalid JSON data'
+        }, status=400)
+    except Exception as e:
+        return JsonResponse({
+            'status': 'error',
+            'message': str(e)
+        }, status=500)
 
-    else:
-        track.receiver_archive=True
-        track.save()
-        messages.success(request, "File Archived")
-        return HttpResponseRedirect('/programme_curriculum/inward_files/')
-    
+@csrf_exempt  # Use this decorator if you're not using CSRF tokens in your API calls
+@permission_classes([IsAuthenticated])
 def file_archive(request,FileId):
-    if request.session['currentDesignationSelected'] == "Associate Professor" or request.session['currentDesignationSelected'] == "Professor" or request.session['currentDesignationSelected'] == "Assistant Professor" or request.session['currentDesignationSelected'] == "Dean Academic":
-        pass
-    elif 'hod' in request.session['currentDesignationSelected'].lower():
-        pass
-    elif request.session['currentDesignationSelected'] == "acadadmin":
-        return HttpResponseRedirect('/programme_curriculum/admin_programmes/')
-    else:
-        return HttpResponseRedirect('/programme_curriculum/programmes/')
-    
-    file = get_object_or_404(NewProposalFile,Q(id = FileId))
-    file.is_archive=True
-    file.save()
-    return HttpResponseRedirect('/programme_curriculum/view_course_proposal_forms/')
+    print("ID:", FileId)
+    try:
+        file = get_object_or_404(NewProposalFile, Q(id=FileId))
+        file.is_archive = True
+        file.save()
+        return JsonResponse({
+            'status': 'success',
+            'message': 'File archived successfully',
+            'file_id': FileId
+        })
+    except Exception as e:
+        return JsonResponse({
+            'status': 'error',
+            'message': str(e)
+        }, status=400)
 
+@csrf_exempt  # Use this decorator if you're not using CSRF tokens in your API calls
+@permission_classes([IsAuthenticated])
 def file_unarchive(request,FileId):
-    if request.session['currentDesignationSelected'] == "Associate Professor" or request.session['currentDesignationSelected'] == "Professor" or request.session['currentDesignationSelected'] == "Assistant Professor" or request.session['currentDesignationSelected'] == "Dean Academic":
-        pass
-    elif 'hod' in request.session['currentDesignationSelected'].lower():
-        pass
-    elif request.session['currentDesignationSelected'] == "acadadmin":
-        return HttpResponseRedirect('/programme_curriculum/admin_programmes/')
-    else:
-        return HttpResponseRedirect('/programme_curriculum/programmes/')
     
-    file = get_object_or_404(NewProposalFile,Q(id = FileId))
-    file.is_archive=False
-    file.save()
-    return HttpResponseRedirect('/programme_curriculum/view_course_proposal_forms/')
+    print("ID:", FileId)
+    try:
+        file = get_object_or_404(NewProposalFile, Q(id=FileId))
+        file.is_archive = False
+        file.save()
+        return JsonResponse({
+            'status': 'success',
+            'message': 'File archived successfully',
+            'file_id': FileId
+        })
+    except Exception as e:
+        return JsonResponse({
+            'status': 'error',
+            'message': str(e)
+        }, status=400)
 
 
 def course_slot_type_choices(request):
@@ -2436,3 +2769,98 @@ def update_course_instructor_form(request, instructor_id):
 
     # Handle unsupported HTTP methods
     return JsonResponse({'status': 'error', 'message': 'Method not allowed'}, status=405)
+
+@csrf_exempt  # Use this decorator if you're not using CSRF tokens in your API calls
+@permission_classes([IsAuthenticated])
+def get_superior_data(request):
+    try:
+        # Get parameters from request
+        username = request.GET.get('uploaderId')
+        print("username",username)
+        designation = request.GET.get('uploaderDes', '').lower()
+        print("designation",designation)
+        
+        if not username:
+            return JsonResponse({'error': 'Username is required'}, status=400)
+        
+        # Get the user object
+        user = User.objects.get(username=username)
+        print("user",user)
+        
+        # Get user's extra info and department
+        extra_info = ExtraInfo.objects.get(user=user)
+        print("extra_info",extra_info)
+        user_department = extra_info.department
+        print("user_department",user_department)
+        
+        # Initialize response data
+        response_data = {
+            'user': username,
+            'department': user_department.name if user_department else None,
+            'superior_data': None
+        }
+        
+        # Check if user is Professor/Associate Professor/Assistant Professor
+        professor_designations = ['professor', 'associate professor', 'assistant professor']
+        is_professor = designation in professor_designations
+        print("is_professor",is_professor)
+        
+        # Check if user is HOD (using regex to match HOD (DEPT) pattern)
+        is_hod = bool(re.match(r'^hod\s*\(.*\)$', designation, re.IGNORECASE))
+        print("is_hod",is_hod)
+        
+        if is_professor and user_department:
+            # Get HOD of the same department
+            hod_designation_name = f"HOD ({user_department.name})"
+            try:
+                hod_designation = Designation.objects.get(name__iexact=hod_designation_name)
+                hod = HoldsDesignation.objects.filter(
+                    designation=hod_designation
+                ).select_related('working', 'working__extrainfo').first()
+                
+                if hod:
+                    hod_user = hod.working
+                    hod_extra_info = hod_user.extrainfo
+                    response_data['superior_data'] = {
+                        'username': hod_user.username,
+                        'name': f"{hod_user.first_name} {hod_user.last_name}",
+                        'designation': hod_designation_name,
+                        'department': user_department.name,
+                        'department_id': user_department.id,
+                        'email': hod_user.email,
+                        'phone': hod_extra_info.phone_no
+                    }
+            except Designation.DoesNotExist:
+                pass  # HOD designation for this department doesn't exist
+        
+        elif is_hod:
+            # Get Dean Academic
+            try:
+                dean_designation = Designation.objects.get(name__iexact='Dean Academic')
+                dean = HoldsDesignation.objects.filter(
+                    designation=dean_designation
+                ).select_related('working', 'working__extrainfo').first()
+                
+                if dean:
+                    dean_user = dean.working
+                    dean_extra_info = dean_user.extrainfo
+                    response_data['superior_data'] = {
+                        'username': dean_user.username,
+                        'name': f"{dean_user.first_name} {hod_user.last_name}",
+                        'designation': 'Dean Academic',
+                        'department': dean_extra_info.department.name if dean_extra_info.department else None,
+                        'department_id': dean_extra_info.department.id if dean_extra_info.department else None,
+                        'email': dean_user.email,
+                        'phone': dean_extra_info.phone_no
+                    }
+            except Designation.DoesNotExist:
+                pass  # Dean Academic designation doesn't exist
+        
+        return JsonResponse(response_data)
+    
+    except User.DoesNotExist:
+        return JsonResponse({'error': 'User not found'}, status=404)
+    except ExtraInfo.DoesNotExist:
+        return JsonResponse({'error': 'User extra info not found'}, status=404)
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=500)
